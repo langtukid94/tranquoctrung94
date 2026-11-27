@@ -2349,6 +2349,159 @@ END:VCARD`;
     }, {threshold: 0.25});
     barEls.forEach(b=>io.observe(b));
   </script>
+  <script>
+/* ===== MEDIA: tự chuyển bài + lặp lại (YouTube IFrame API) ===== */
+(function(){
+  /* 1) Thay iframe cũ bằng khung trống để YouTube API tự tạo trình phát */
+  var oldFrame = document.getElementById("ytPlayer");
+  var host = document.createElement("div");
+  host.id = "ytPlayerHost";
+  oldFrame.parentNode.replaceChild(host, oldFrame);
+
+  var loopMode = 0;               // 0 = hết playlist thì dừng, 1 = lặp 1 bài, 2 = lặp cả playlist
+  var LABEL = ["OFF","ONE","ALL"];
+  var ytp = null, ready = false, pending = null, errCount = 0;
+
+  function validId(id){ return /^[\w-]{11}$/.test(id || ""); }
+  function modeText(){ return "MODE: Autoplay " + (autoplay ? "ON" : "OFF") + " • Loop " + LABEL[loopMode]; }
+
+  /* 2) Hàng đợi = các bài đang hiển thị (theo ô tìm kiếm + bộ lọc), bỏ bài chưa có videoId */
+  function queueIdx(){
+    var query = (mediaSearch.value || "").trim().toLowerCase();
+    var tf = (mediaType.value || "all").toLowerCase();
+    var out = [];
+    for(var i = 0; i < MEDIA.length; i++){
+      var m = MEDIA[i];
+      var okQ = !query || m.title.toLowerCase().indexOf(query) > -1 || (m.meta || "").toLowerCase().indexOf(query) > -1;
+      var okT = tf === "all" || (m.type || "").toLowerCase() === tf;
+      if(okQ && okT && validId(m.videoId)) out.push(i);
+    }
+    return out;
+  }
+
+  function nextIdx(step){
+    var q = queueIdx();
+    if(!q.length) return -1;
+    if(step > 0){
+      for(var k = 0; k < q.length; k++){ if(q[k] > currentIndex) return q[k]; }
+      return loopMode === 2 ? q[0] : -1;
+    }
+    for(var j = q.length - 1; j >= 0; j--){ if(q[j] < currentIndex) return q[j]; }
+    return q[q.length - 1];
+  }
+
+  function playNext(auto){
+    var n = nextIdx(1);
+    if(n < 0){
+      if(auto){ toast("Đã phát hết playlist ✅"); return; }
+      var q = queueIdx(); if(!q.length) return; n = q[0];
+    }
+    window.setActiveTrackByIndex(n, {play:true, auto:auto});
+  }
+  function playPrev(){
+    var n = nextIdx(-1);
+    if(n >= 0) window.setActiveTrackByIndex(n, {play:true});
+  }
+
+  /* 3) Ghi đè hàm chọn bài cũ (các ô trong playlist sẽ tự dùng hàm mới) */
+  window.setActiveTrackByIndex = function(idx, opts){
+    var item = MEDIA[idx];
+    if(!item) return;
+    currentIndex = idx;
+    var play = (opts && opts.play !== undefined) ? opts.play : true;
+
+    nowTypeEl.textContent  = "TYPE: " + item.type;
+    nowTitleEl.textContent = "NOW: " + item.title;
+    nowModeEl.textContent  = modeText();
+
+    document.querySelectorAll(".track").forEach(function(el){ el.classList.remove("active"); });
+    var active = document.querySelector('.track[data-idx="' + idx + '"]');
+    if(active){
+      active.classList.add("active");
+      var box = document.querySelector(".playlistScroll");
+      if(box){
+        var r = active.getBoundingClientRect(), b = box.getBoundingClientRect();
+        box.scrollTo({ top: box.scrollTop + (r.top - b.top) - 8, behavior: "smooth" });
+      }
+    }
+    loadLyricFor(item.videoId);
+
+    if(!validId(item.videoId)){
+      toast("Bài này chưa có videoId");
+      if(opts && opts.auto) playNext(true);
+      return;
+    }
+    if(!ready){ pending = {idx: idx, play: play}; return; }
+    if(play) ytp.loadVideoById(item.videoId); else ytp.cueVideoById(item.videoId);
+  };
+
+  /* 4) Tạo trình phát YouTube + nhận tín hiệu hết bài */
+  window.onYouTubeIframeAPIReady = function(){
+    ytp = new YT.Player("ytPlayerHost", {
+      width: "100%", height: "420",
+      playerVars: { rel:0, modestbranding:1, playsinline:1 },
+      events: {
+        onReady: function(){
+          ready = true;
+          var p = pending || {idx: currentIndex, play: false};
+          pending = null;
+          window.setActiveTrackByIndex(p.idx, {play: p.play});
+        },
+        onStateChange: function(e){
+          if(e.data === YT.PlayerState.ENDED){
+            if(loopMode === 1){ ytp.seekTo(0); ytp.playVideo(); }
+            else if(autoplay){ playNext(true); }
+          } else if(e.data === YT.PlayerState.PLAYING){
+            errCount = 0;
+          }
+        },
+        onError: function(){
+          errCount++;
+          if(errCount > 5){ toast("Nhiều video lỗi, dừng tự chuyển bài"); return; }
+          toast("Video không phát được, chuyển bài…");
+          setTimeout(function(){ playNext(true); }, 800);
+        }
+      }
+    });
+  };
+  var s = document.createElement("script");
+  s.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(s);
+
+  /* 5) Làm mới 2 nút cũ (bỏ code cũ gắn vào) + thêm nút Bài trước / Bài sau */
+  function fresh(id){
+    var b = document.getElementById(id), c = b.cloneNode(true);
+    b.parentNode.replaceChild(c, b);
+    return c;
+  }
+  var bAuto = fresh("btnAutoplay"), bLoop = fresh("btnLoop");
+
+  var bPrev = document.createElement("button");
+  bPrev.className = "miniBtn"; bPrev.type = "button"; bPrev.textContent = "⏮ Bài trước";
+  var bNext = document.createElement("button");
+  bNext.className = "miniBtn"; bNext.type = "button"; bNext.textContent = "⏭ Bài sau";
+  bLoop.parentNode.insertBefore(bPrev, bLoop.nextSibling);
+  bPrev.parentNode.insertBefore(bNext, bPrev.nextSibling);
+
+  bAuto.addEventListener("click", function(){
+    autoplay = !autoplay;
+    document.getElementById("apState").textContent = autoplay ? "ON" : "OFF";
+    nowModeEl.textContent = modeText();
+    toast("Tự chuyển bài: " + (autoplay ? "ON" : "OFF"));
+  });
+  bLoop.addEventListener("click", function(){
+    loopMode = (loopMode + 1) % 3;
+    document.getElementById("lpState").textContent = LABEL[loopMode];
+    nowModeEl.textContent = modeText();
+    toast(["Phát hết playlist rồi dừng", "Lặp lại 1 bài", "Lặp lại cả playlist"][loopMode]);
+  });
+  bPrev.addEventListener("click", playPrev);
+  bNext.addEventListener("click", function(){ playNext(false); });
+
+  document.getElementById("lpState").textContent = "OFF";
+  nowModeEl.textContent = modeText();
+})();
+</script>
   <script type="module">
 import {pipeline,env} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
 env.allowLocalModels=false;
