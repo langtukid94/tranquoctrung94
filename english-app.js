@@ -387,4 +387,240 @@ let lqT;$("#lq").oninput=()=>{clearTimeout(lqT);lqT=setTimeout(libRender,250)};$
 $("#lr").onclick=()=>{if(!LIB||!LIB.s.length)return;const x=rnd(LIB.s),b=$("#ll");b.textContent="";b.append(entry({en:x[0],vi:x[1]},x[2]))};
 libLoad().then(()=>{if(!$("#ch").classList.contains("hide"))renderDlg()});
 
+
+/* ===================================================================
+   ENGLISH-PLUS  —  DÁN NGUYÊN KHỐI NÀY NGAY TRƯỚC DÒNG CUỐI:  persist();showStat();
+   Không cần sửa code cũ. Thêm:
+   1) Tab "∞ Học vô hạn": thanh tìm kiếm + cuộn vô hạn câu (IELTS/TOEIC/tự do),
+      nghe liên tục, nhại giọng tự động, ghi âm từng câu
+   2) Cuộn vô hạn (tự tải thêm) cho Thư viện, Hội thoại, kết quả tìm kiếm
+   3) Ghi âm thật (MediaRecorder) + nhận dạng giọng nói + nghe lại giọng mình
+   4) Hội thoại: nhập vai A/B (bạn nói, app chấm điểm), AI tự tạo hội thoại mới khi cuộn hết
+   5) Chat AI như bạn/gia sư: hiểu Việt–Anh, sửa lỗi, đọc to, rảnh tay (nói–nghe liên tục)
+   6) AI chạy ngay trên máy (không cần cài Ollama/API key)
+   =================================================================== */
+
+const hasVi=s=>/[ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]/i.test(s||"");
+root.append(Object.assign(document.createElement("style"),{textContent:`
+audio{max-width:100%;height:34px}
+.sticky{position:sticky;top:0;z-index:20;padding:6px 0;backdrop-filter:blur(10px)}
+.rec{background:#d33!important;color:#fff!important}
+.sent{text-align:center;padding:14px}`}));
+$("#uq").parentElement.classList.add("sticky");
+
+/* ---------- 1. Cuộn vô hạn: thay pager cũ (nút "Xem thêm") ---------- */
+pager=function(L,f,box,n=20){let i=0,busy=0;const s=el("div","note pgs sent","⬇ Cuộn để xem thêm…");box.append(s);
+ const ob=new IntersectionObserver(e=>{if(e[0].isIntersecting)go()},{rootMargin:"500px"});
+ function go(){if(busy)return;busy=1;L.slice(i,i+n).forEach(x=>box.insertBefore(f(x),s));i+=n;if(i>=L.length){ob.disconnect();s.remove();return}busy=0;ob.unobserve(s);ob.observe(s)}
+ go()};
+
+/* ---------- 2. Ghi âm thật + nhận dạng giọng nói ---------- */
+async function voice(btn,onT,onDone,o={}){
+ if(btn._v){btn._v();return}
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition,lab=btn._l||(btn._l=btn.textContent);
+ let stream=null,mr=null,r=null,ch=[],text="",pend=0,t0=Date.now(),fin=0;
+ const stopMr=()=>{try{mr&&mr.state!=="inactive"&&mr.stop()}catch(e){}},stopSr=()=>{try{r&&r.stop()}catch(e){}};
+ const finish=()=>{if(--pend>0||fin++)return;btn._v=null;btn.classList.remove("rec");btn.textContent=lab;stream&&stream.getTracks().forEach(x=>x.stop());
+  onDone&&onDone(text.trim(),ch.length?new Blob(ch,{type:(mr&&mr.mimeType)||"audio/webm"}):null,(Date.now()-t0)/1000)};
+ btn.textContent="⏹";btn.classList.add("rec");btn._v=()=>{stopSr();stopMr()};
+ try{stream=await navigator.mediaDevices.getUserMedia({audio:true});mr=new MediaRecorder(stream);mr.ondataavailable=e=>{e.data&&e.data.size&&ch.push(e.data)};mr.onstop=()=>{stopSr();finish()};pend++;mr.start()}catch(e){mr=null}
+ if(SR){r=new SR();r.lang=o.lang||"en-US";r.interimResults=true;r.continuous=!!o.cont;r.onresult=e=>{let t="";for(const x of e.results)t+=x[0].transcript;text=t;onT&&onT(t)};r.onend=()=>{stopMr();finish()};r.onerror=()=>{};pend++;try{r.start()}catch(e){pend--}}
+ if(!pend){btn._v=null;btn.classList.remove("rec");btn.textContent=lab;onT&&onT("Chưa cấp quyền micro hoặc trình duyệt không hỗ trợ (dùng Chrome/Edge, mở bằng https hoặc localhost).")}}
+
+function playback(blob,en,small){const d=el("div","row"),a=document.createElement("audio");a.controls=true;a.src=URL.createObjectURL(blob);
+ const dlb=el("a","lk","⬇");dlb.href=a.src;dlb.download="ghi-am-"+Date.now()+".webm";d.append(a,dlb);
+ if(en&&!small){const b=el("button","ib","🔊 Giọng mẫu");b.onclick=()=>speak(en);d.append(b)}return d}
+
+/* nút ⏺ ghi âm + chấm điểm trên MỌI câu (thêm vào actions cũ) */
+const _act=actions;
+actions=function(o,res){const r=_act(o,res);
+ if(res){const b=el("button","ib","⏺");b.title="Ghi âm giọng bạn, nghe lại & chấm điểm";
+  b.onclick=()=>voice(b,t=>{res.textContent="… "+t},(t,blob)=>{res.textContent="";if(t)addXP(cmp(o.en,t,res)>=80?5:1);if(blob)res.append(playback(blob,o.en))});
+  r.insertBefore(b,r.lastChild)}
+ return r};
+
+/* máy ghi âm tự do trong tab "Nói & AI" */
+{const c=el("div","card",null,el("b","","🎙️ Máy ghi âm: ghi giọng bạn, nghe lại, tự chép lời & sửa lỗi")),b=el("button","btn","⏺ Bắt đầu ghi"),t=el("textarea"),l=el("div");
+ t.placeholder="Lời bạn nói sẽ hiện ở đây…";t.style.minHeight="70px";
+ b.onclick=()=>voice(b,x=>{t.value=x},(x,blob,dur)=>{if(!blob&&!x)return;const it=el("div","item"),eb=el("div");
+  it.append(el("div","note",new Date().toLocaleTimeString()+" · "+Math.round(dur)+" giây"));if(blob)it.append(playback(blob,"",1));
+  if(x){it.append(el("div","en",x));const fx=el("button","ib","✏️ Sửa lỗi"),tv=el("button","ib","🇻🇳 Dịch"),vv=el("div","vi");
+   fx.onclick=()=>checkInto(x,eb);tv.onclick=async()=>{vv.textContent=await qtr(x)};it.append(el("div","row","",fx,tv),vv,eb)}
+  l.prepend(it)},{cont:true});
+ c.append(el("div","row","",b),t,l);$("#sk").append(c)}
+
+/* tìm kiếm bằng giọng nói (EN/VI) */
+{const um=el("button","ib","🎤"),ul=el("select");um.title="Tìm bằng giọng nói";
+ [["en-US","EN"],["vi-VN","VI"]].forEach(([v,n])=>{const o=el("option","",n);o.value=v;ul.append(o)});
+ $("#ugo").before(ul,um);um.onclick=()=>voice(um,t=>{$("#uq").value=t},t=>{if(t)$("#ugo").click()},{lang:ul.value})}
+
+/* ---------- 3. Chủ đề & mẫu câu IELTS/TOEIC (mở rộng vô hạn theo từ khóa) ---------- */
+const TOPICS={
+ IELTS:["education","technology","environment","health","transport","work and careers","globalisation","crime","the media","tourism","family life","urbanisation","climate change","social media","renewable energy","online learning"],
+ TOEIC:["meeting","business trip","job interview","budget report","customer complaint","product launch","office supplies","training session","contract","shipment","marketing campaign","conference call"],
+ life:["shopping","cooking","pets","weekend plans","travel","health","hobbies","weather"],
+ social:["Instagram","TikTok","YouTube","group chat","online privacy","fake news","livestream","online shopping"]};
+TOPICS.all=[].concat(TOPICS.IELTS,TOPICS.TOEIC,TOPICS.life,TOPICS.social);
+const TPL={
+ IELTS:["In my opinion, {t} plays a crucial role in modern society.","One major advantage of {t} is that it can improve people's quality of life.","Critics argue that too much emphasis on {t} may cause serious problems.","Governments should invest more in {t} to ensure long-term benefits.","To sum up, the benefits of {t} outweigh the drawbacks.","Speaking from personal experience, {t} has changed the way I live.","It is widely believed that {t} will become even more important in the future.","Another factor to consider is how {t} affects young people.","There is no doubt that {t} has both positive and negative consequences.","Some people think {t} should be a priority, while others disagree.","A growing number of people are concerned about {t}.","I would say that {t} is one of the most significant issues today.","One possible solution to problems related to {t} is better education.","Compared with the past, {t} is far more important nowadays."],
+ TOEIC:["Could you please send me the {t} details before Friday?","The {t} has been rescheduled to next Monday.","We are pleased to inform you that your {t} request has been approved.","I'm calling to confirm our {t} for tomorrow morning.","Please let me know if there are any changes to the {t}.","All employees must complete the {t} by the end of the month.","The manager asked me to prepare a report on the {t}.","Due to unexpected circumstances, the {t} will be postponed.","Thank you for your prompt reply regarding the {t}.","We apologize for the inconvenience caused by the {t}.","Please find the attached document related to the {t}.","The company will announce the new {t} policy next week."]};
+
+/* ---------- 4. Tab "∞ Học vô hạn" ---------- */
+const sec=document.createElement("section");sec.id="inf";sec.className="hide";
+sec.innerHTML=`<div class="card"><b>∞ Học vô hạn: tìm kiếm + cuộn không giới hạn</b>
+<div class="row"><input type="text" id="iq" placeholder="🔎 Từ khóa / chủ đề (vd: environment, meeting, travel)… để trống = ngẫu nhiên" style="flex:1"><button class="btn" id="igo">Tìm</button></div>
+<div class="row"><select id="iex"><option value="free">Tự do</option><option value="IELTS">IELTS</option><option value="TOEIC">TOEIC</option></select>
+<select id="isrc"><option value="auto">Nguồn: tự động</option><option value="lib">Thư viện</option><option value="tat">Tatoeba (online)</option><option value="ai">AI tạo</option><option value="tpl">Mẫu IELTS/TOEIC</option></select>
+<select id="ilv"><option>A2</option><option selected>B1</option><option>B2</option><option>C1</option></select>
+<label class="note"><input type="checkbox" id="iai"> Dùng AI tạo thêm</label></div>
+<div class="row"><button class="btn sec" id="iplay">▶ Nghe liên tục</button><button class="btn sec" id="ishadow">🎤 Nhại theo từng câu</button></div>
+<div id="ichips"></div>
+<p class="note">Mỗi câu có 🔊 nghe, 🐢 chậm, 🎤 chấm điểm, ⏺ ghi âm nghe lại, ☆ lưu; chạm vào từ để tra. Cuộn xuống là tự tải thêm: thư viện → Tatoeba → mẫu câu (đổi từ khóa là ra câu mới, từ đồng nghĩa cũng được dùng để tạo thêm) và AI nếu bật. Lần đầu dịch cần tải mô hình ~100 MB.</p></div>
+<div id="ifeed"></div><div id="isent" class="note sent">⬇ Cuộn xuống để tải thêm…</div>`;
+$("#rf").after(sec);
+{const ch=$("#ichips");[["IELTS",TOPICS.IELTS],["TOEIC",TOPICS.TOEIC]].forEach(([e,L])=>L.forEach(t=>{const c=el("span","chip",e+" · "+t);c.onclick=()=>{$("#iex").value=e;$("#iq").value=t;infStart(t)};ch.append(c)}))}
+
+const nb=el("button","","∞ Học vô hạn");nb.dataset.t="inf";$("#tabs").insertBefore(nb,$("#tabs").children[2]);
+const ALLT=["tr","ch","lb","sk","gm","fc","gc","ex","sv","rf"];
+$$("#tabs button").forEach(b=>{if(b!==nb)b.addEventListener("click",()=>sec.classList.add("hide"))});
+nb.onclick=()=>{$$("#tabs button").forEach(x=>x.classList.toggle("on",x===nb));ALLT.forEach(id=>$("#"+id).classList.add("hide"));sec.classList.remove("hide");if(!$("#ifeed").children.length&&!INF.busy)infStart("")};
+
+const INF={q:"",seen:new Set(),page:1,busy:0,lib:null,li:0,libDone:0,tatDone:0,tops:null,n:0,tok:0,aiErr:""};
+async function infBatch(){
+ const q=INF.q,src=$("#isrc").value,ex=$("#iex").value,out=[],B=8;
+ const add=(en,vi,tag)=>{en=(en||"").trim();const k=en.toLowerCase();if(en&&!INF.seen.has(k)){INF.seen.add(k);out.push([en,vi||"",tag])}};
+ const skipLib=src==="tpl"||src==="ai"||(src==="auto"&&ex!=="free"&&!q);
+ if(!skipLib&&(src==="auto"||src==="lib")&&!INF.libDone){
+  if(!INF.lib){const ql=q.toLowerCase();INF.lib=shuf(LIBS.concat(allLines()).filter(l=>!ql||(l[0]+" "+l[1]).toLowerCase().includes(ql)));INF.li=0}
+  INF.lib.slice(INF.li,INF.li+B).forEach(l=>add(l[0],l[1],"Thư viện"));INF.li+=B;if(INF.li>=INF.lib.length)INF.libDone=1;
+  if(out.length)return out}
+ if(src==="lib"){if(INF.lib&&INF.lib.length){INF.lib=null;INF.libDone=0;INF.seen.clear();return infBatch()}return out}
+ if((src==="auto"||src==="tat")&&q&&!INF.tatDone){
+  const j=await J("https://tatoeba.org/en/api_v0/search?from=eng&to=vie&trans_filter=limit&trans_to=vie&query="+encodeURIComponent(q)+"&page="+INF.page++),R=(j&&j.results)||[];
+  R.forEach(r=>{const t=[].concat(...(r.translations||[])).find(x=>x&&x.lang==="vie");add(r.text,t&&t.text,"Tatoeba")});
+  if(R.length<10)INF.tatDone=1;
+  if(out.length)return out;if(src==="tat")return out}
+ const useAI=src==="ai"||(src==="auto"&&$("#iai").checked);
+ if(useAI){try{const tp=q||rnd(TOPICS[ex==="free"?"all":ex]),
+   a=await chat([{role:"user",content:'Write 8 new, different, natural English sentences (CEFR '+$("#ilv").value+') about "'+tp+'"'+(ex!=="free"?" useful for "+ex+" preparation":"")+". Output exactly one sentence per line, no numbering, no translations, no extra text."}]);
+  a.split(/\n+/).map(s=>s.replace(/^[\s\-*\d.)]+/,"").replace(/\*+/g,"").trim()).filter(s=>s.length>8&&!hasVi(s)&&/[A-Za-z]/.test(s)).forEach(s=>add(s,"","AI"));
+  if(out.length)return out}catch(e){INF.aiErr=e.message}}
+ const exs=ex==="free"?["IELTS","TOEIC"]:[ex];
+ if(!INF.tops){const t=[];if(q){t.push(q);if(!/\s/.test(q)){try{(await info(q.toLowerCase())).syn.slice(0,12).forEach(x=>t.push(x))}catch(e){}}}INF.tops=t}
+ for(let k=0;k<60&&out.length<B;k++){const e=rnd(exs),tp=INF.tops.length?rnd(INF.tops):rnd(TOPICS[e]);add(rnd(TPL[e]).replace("{t}",tp),"",e+" mẫu")}
+ return out}
+
+const infObs=new IntersectionObserver(es=>{if(es[0].isIntersecting)infMore()},{rootMargin:"500px"});infObs.observe($("#isent"));
+async function infMore(){if(INF.busy)return;INF.busy=1;const tk=INF.tok,st=$("#isent");st.textContent="Đang tải thêm…";
+ try{const B=await infBatch();if(tk!==INF.tok)return;
+  if(!B.length){st.textContent="Đã hết nguồn cho từ khóa này. Hãy đổi từ khóa, bật “Dùng AI tạo thêm” hoặc chọn nguồn khác."+(INF.aiErr?" (AI: "+INF.aiErr+")":"");INF.busy=0;return}
+  const hd=$("#iex").value!=="free";
+  B.forEach(([en,vi,tag])=>{const o={en,vi},d=entry(o,tag,hd);d.dataset.en=en;$("#ifeed").append(d);if(!vi)qtr(en).then(v=>{o.vi=v;d.querySelector(".vi").textContent=v}).catch(()=>{})});
+  INF.n+=B.length;st.textContent="⬇ Cuộn xuống để tải thêm… ("+INF.n+" câu)"}
+ catch(e){if(tk===INF.tok)st.textContent="Lỗi: "+e.message}
+ if(tk===INF.tok){INF.busy=0;infObs.unobserve(st);infObs.observe(st)}}
+function infStart(q){Object.assign(INF,{q:(q||"").trim(),seen:new Set(),page:1,lib:null,li:0,libDone:0,tatDone:0,tops:null,n:0,aiErr:"",busy:0,tok:INF.tok+1});$("#ifeed").textContent="";infMore()}
+$("#igo").onclick=()=>infStart($("#iq").value);$("#iq").onkeydown=e=>{if(e.key==="Enter")infStart($("#iq").value)};
+["iex","isrc"].forEach(id=>$("#"+id).onchange=()=>infStart($("#iq").value));
+
+/* nghe liên tục / nhại tự động qua cả bảng cuộn */
+let ipl=0;
+async function infRun(shadow){if(ipl){ipl=0;speechSynthesis.cancel();return}ipl=1;(shadow?$("#ishadow"):$("#iplay")).textContent="⏹ Dừng";let tot=0,n=0;
+ for(let i=0;ipl;i++){let it=$("#ifeed").children[i];if(!it){await infMore();while(INF.busy)await sleep(300);it=$("#ifeed").children[i];if(!it)break}
+  it.style.background="var(--ac2)";it.scrollIntoView({block:"center",behavior:"smooth"});await speak(it.dataset.en);
+  if(shadow&&ipl){const r=el("div");it.append(r);tot+=await listen(r,it.dataset.en);n++}
+  it.style.background="";await sleep(500)}
+ ipl=0;$("#iplay").textContent="▶ Nghe liên tục";$("#ishadow").textContent="🎤 Nhại theo từng câu";if(n){addXP(n*3)}}
+$("#iplay").onclick=()=>infRun(0);$("#ishadow").onclick=()=>infRun(1);
+
+/* từ ô tìm kiếm trên cùng: thêm nút "∞ Học tiếp" */
+const _uni=universal;
+universal=async function(q){const p=_uni(q);const c=$("#ures .card");
+ if(c&&c.firstChild){const b=el("button","ib","∞ Học tiếp");b.onclick=()=>{nb.click();$("#iq").value=q;infStart(q)};c.firstChild.append(b)}
+ return p};
+
+/* ---------- 5. Hội thoại: cuộn vô hạn, nhập vai, AI tự tạo thêm ---------- */
+function dlgCard(d){const c=el("div","card"),hd=el("div","row",null,el("b","",d.t)),res=el("div"),rows=[];
+ const mk=(t,f)=>{const b=el("button","ib",t);b.onclick=f;hd.append(b);return b};
+ mk("▶ Nghe cả đoạn",async()=>{stopAuto=false;for(let i=0;i<d.l.length&&!stopAuto;i++){rows[i].style.background="var(--ac2)";await speak(d.l[i][0],0,i%2);rows[i].style.background=""}});
+ [0,1].forEach(r=>mk("🎭 Nhập vai "+"AB"[r],async()=>{stopAuto=false;res.textContent="";const sc=[];
+  for(let i=0;i<d.l.length&&!stopAuto;i++){const row=rows[i];row.scrollIntoView({block:"center",behavior:"smooth"});row.style.background="var(--ac2)";
+   if(i%2===r){const out=el("div");res.append(out);sc.push(await listen(out,d.l[i][0]))}else await speak(d.l[i][0],0,i%2);row.style.background=""}
+  if(sc.length){res.append(el("div","wb","Điểm trung bình vai "+"AB"[r]+": "+Math.round(sc.reduce((a,b)=>a+b,0)/sc.length)+"%"));addXP(sc.length*3)}}));
+ mk("⏹",()=>{stopAuto=true;speechSynthesis.cancel()});
+ if(d.c)mk("🗑",()=>{custom.splice(custom.indexOf(d),1);SV("eng_dlg",custom);renderDlg()});
+ c.append(hd);d.l.forEach((x,i)=>{const row=lineEl(x,i%2);rows.push(row);c.append(row)});c.append(res);return c}
+
+async function aiDialogue(tp,st){const a=await chat([{role:"user",content:PROMPTS.dialogue(tp)}]),
+ ls=a.split(/\n+/).map(s=>s.replace(/\*+/g,"").trim().replace(/^[AB]\s*[:\-]\s*/i,"").trim()).filter(s=>s&&/[A-Za-z]/.test(s)&&!hasVi(s)&&!/^(here|sure|certainly)/i.test(s)),l=[];
+ for(const s of ls){st&&st("Đang dịch "+(l.length+1)+"/"+ls.length+"…");l.push([s,await qtr(s)])}
+ if(l.length<2)throw new Error("AI trả về nội dung không hợp lệ");return{t:tp,l,c:1}}
+
+function autoGen(box){const s=el("div","note sent ags","∞ Cuộn xuống: AI sẽ tạo hội thoại mới…");box.append(s);let busy=0;
+ const ob=new IntersectionObserver(async es=>{if(!es[0].isIntersecting||busy||!$("#dauto").checked)return;
+  if(box.querySelector(".pgs")){setTimeout(()=>{ob.unobserve(s);ob.observe(s)},800);return}
+  busy=1;
+  try{const tp=rnd(TOPICS[$("#dtp").value]||TOPICS.all);s.textContent="Đang tạo hội thoại: "+tp+"…";const d=await aiDialogue(tp,t=>s.textContent=t);custom.push(d);SV("eng_dlg",custom);box.insertBefore(dlgCard(d),s);s.textContent="∞ Cuộn xuống để tạo tiếp…"}
+  catch(e){s.textContent="Chưa kết nối AI ("+e.message+"). Vào tab Nói & AI → Kết nối AI (chọn “Trên máy” nếu không muốn cài gì).";ob.disconnect();return}
+  busy=0;ob.unobserve(s);ob.observe(s)},{rootMargin:"300px"});ob.observe(s)}
+
+renderDlg=function(){const q=$("#dq").value.trim().toLowerCase(),box=$("#dl");box.textContent="";const all=DLG.concat(custom);
+ if(q){const c=el("div","card"),R=[];all.forEach(d=>d.l.forEach((x,i)=>{if((x[0]+x[1]).toLowerCase().includes(q))R.push([x,i%2,d.t])}));
+  if(!R.length)c.append(el("p","note","Không thấy trong thư viện. Bấm “∞ Học vô hạn” để tìm/tạo thêm câu về “"+q+"”."));else pager(R,r=>lineEl(...r),c,25);box.append(c);return}
+ pager(all,dlgCard,box,3);if($("#dauto")&&$("#dauto").checked)autoGen(box)};
+$("#dq").oninput=()=>renderDlg();
+{const dr=el("div","row"),dtp=el("select"),da=document.createElement("input");da.type="checkbox";da.id="dauto";dtp.id="dtp";
+ [["all","Mọi chủ đề"],["IELTS","IELTS"],["TOEIC","TOEIC"],["life","Đời sống"],["social","Mạng xã hội"]].forEach(([v,l])=>{const o=el("option","",l);o.value=v;dtp.append(o)});
+ dr.append(el("label","note",null,da," ∞ Tự tạo hội thoại mới bằng AI khi cuộn hết"),dtp);$("#dl").before(dr);da.onchange=()=>renderDlg()}
+
+/* ---------- 6. AI chạy ngay trên máy (không cần cài gì) ---------- */
+AIP["Trên máy (0.5B, nhẹ)"]=["local","onnx-community/Qwen2.5-0.5B-Instruct"];
+AIP["Trên máy (1.5B, thông minh hơn)"]=["local","onnx-community/Qwen2.5-1.5B-Instruct"];
+Object.keys(AIP).forEach(k=>{if(![...$("#ap").options].some(o=>o.value===k)){const o=el("option","",k);o.value=k;$("#ap").append(o)}});
+$("#ap").value=ai.p;
+const LP={};
+async function localChat(msgs){const id=ai.model||"onnx-community/Qwen2.5-0.5B-Instruct",sys=msgs[0],rest=msgs.slice(1).slice(-6);
+ if(!LP[id]){const cb=p=>{if(p.status==="progress")$("#ast").textContent="Đang tải AI trên máy… "+Math.round(p.progress)+"% (chỉ lần đầu)"};
+  try{LP[id]=await pipeline("text-generation",id,{dtype:"q4",device:navigator.gpu?"webgpu":"wasm",progress_callback:cb})}
+  catch(e){LP[id]=await pipeline("text-generation",id,{dtype:"q4",device:"wasm",progress_callback:cb})}}
+ const out=await LP[id]([sys,...rest],{max_new_tokens:220,do_sample:true,temperature:.7,top_p:.9,repetition_penalty:1.1}),g=out[0].generated_text;
+ return(Array.isArray(g)?g[g.length-1].content:String(g)).trim()}
+const _chat=chat;
+chat=async function(msgs){if(ai.url==="local")return localChat(msgs);return _chat(msgs)};
+
+/* ---------- 7. Chat AI: bạn bè / gia sư, nói, ghi âm, rảnh tay ---------- */
+const GREET="Hi! I’m Teddy 👋 Mình là Teddy, bạn học và gia sư tiếng Anh của bạn. Bạn cứ nói hoặc gõ bằng tiếng Anh hay tiếng Việt, mình sẽ trò chuyện, sửa lỗi và giải thích. What would you like to talk about today?";
+const greet=()=>{const m=el("div","wb",null,el("div","",GREET));m.style.margin="6px 0";$("#clog").append(m)};greet();
+{const row=el("div","row"),mode=el("select"),hf=document.createElement("input"),sp=el("button","ib","⏹ Dừng đọc");mode.id="cmode";hf.type="checkbox";hf.id="chands";
+ [["friend","👫 Bạn bè trò chuyện"],["tutor","👩‍🏫 Gia sư sửa lỗi"],["ielts","🎓 IELTS Speaking"],["qa","❓ Hỏi đáp mọi thứ (tiếng Việt)"]].forEach(([v,l])=>{const o=el("option","",l);o.value=v;mode.append(o)});
+ sp.onclick=()=>{$("#chands").checked=false;speechSynthesis.cancel()};
+ row.append(mode,el("label","note",null,hf," 🔁 Rảnh tay (tự nghe–nói liên tục)"),sp);$("#clog").before(row)}
+$("#cnew").addEventListener("click",greet);
+
+const sysP2=()=>{const m=($("#cmode")||{}).value||"friend",lv=$("#lv").value,sc=$("#sc").value;
+ const M={friend:"Chat like a close, funny friend about: "+sc+". Reply in 1-4 short natural English sentences and end with a question. If the learner writes in Vietnamese or asks what a word means or how to say something, answer in Vietnamese, give the English phrase plus one example, then ask a follow-up question in English.",
+  tutor:"Act as a patient English tutor. Reply in simple English, then briefly explain any new word or grammar point in Vietnamese. Ask one question to continue.",
+  ielts:"Act as an IELTS Speaking examiner (scenario: "+sc+"). Ask one question at a time (Part 1, 2 or 3). After the learner's answer, give a very short comment, then the next question.",
+  qa:"The learner may ask about ANY topic. Answer helpfully and accurately in Vietnamese, include the key English words/phrases with IPA and 1-2 example sentences with Vietnamese translations. Say honestly when you are not sure."};
+ return "You are Teddy, a warm, patient English teacher and friend of a Vietnamese learner (CEFR "+lv+"). You are fluent in English and Vietnamese. "+M[m]+" If the learner's last English message has grammar, spelling or word-choice mistakes, finish with a final line that starts exactly with 'Correction:' followed by the corrected sentence and a short explanation in Vietnamese. If there are no mistakes, do not write that line. Plain text only, no markdown."};
+
+function speakVi(t){return new Promise(res=>{if(!window.speechSynthesis)return res();speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="vi-VN";const v=speechSynthesis.getVoices().find(x=>/^vi/i.test(x.lang));if(v)u.voice=v;u.rate=+$("#rate").value||.9;u.onend=u.onerror=()=>res();speechSynthesis.speak(u)})}
+const speakAuto=async t=>{for(const l of t.split(/\n+/).filter(Boolean))await(hasVi(l)?speakVi(l):speak(l))};
+
+let lastRec=null;$("#cin").addEventListener("input",()=>lastRec=null);
+send=async function(t,blob){t=(t||"").trim();if(!t)return;blob=blob||lastRec;lastRec=null;$("#cin").value="";
+ hist.push({role:"user",content:t});const me=bub(1,t);if(blob)me.append(playback(blob,"",1));
+ const w=bub(0,"…");$("#csend").disabled=true;let reply="";
+ try{const a=await chat([{role:"system",content:sysP2()},...hist.slice(-12)]);hist.push({role:"assistant",content:a});
+  const [rep,...cr]=a.split(/\n*Correction:/i);reply=rep.trim();const o={en:reply,vi:""},d=entry(o,"AI");w.textContent="";w.append(d);
+  if(!hasVi(reply))qtr(reply).then(v=>{o.vi=v;d.querySelector(".vi").textContent=v}).catch(()=>{});
+  if(cr.length){const c=cr.join(" ").trim(),f=el("div","note no","✏️ Sửa lỗi: "+c);w.append(f);if(!hasVi(c))qtr(c).then(v=>f.append(el("div","note","🇻🇳 "+v))).catch(()=>{})}
+  addXP(3)}
+ catch(e){w.textContent="❌ "+e.message+". Mở “Kết nối AI” phía trên: chọn “Trên máy” (không cần cài gì), hoặc Ollama/Groq/OpenRouter.";reply=""}
+ $("#csend").disabled=false;
+ if(reply&&$("#cspeak").checked)await speakAuto(reply);
+ if(reply&&$("#chands").checked)setTimeout(()=>{if($("#chands").checked&&!$("#cmic")._v)$("#cmic").click()},400)};
+$("#cmic").onclick=()=>{speechSynthesis.cancel();
+ voice($("#cmic"),t=>{$("#cin").value=t},(t,blob)=>{lastRec=blob;if(t&&($("#cauto").checked||$("#chands").checked))send(t,blob)})};
+
 persist();showStat();
