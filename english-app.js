@@ -75,13 +75,193 @@ const POS={noun:"danh từ",verb:"động từ",adjective:"tính từ",adverb:"t
 const rnd=a=>a[Math.floor(Math.random()*a.length)],shuf=a=>a.slice().sort(()=>Math.random()-.5);
 
 /* ---- Dịch (OPUS-MT, nguồn mở, chạy trong trình duyệt) ---- */
-const MODELS={"vi-en":"onnx-community/opus-mt-vi-en","en-vi":"Xenova/opus-mt-en-vi"},pipes={};
-async function getPipe(d){if(pipes[d])return pipes[d];const pg=$("#pg");pg.classList.remove("hide");
- const cb=p=>{if(p.status==="progress"){pg.value=p.progress;$("#st").textContent="Đang tải mô hình… "+Math.round(p.progress)+"%"}};
- try{pipes[d]=await pipeline("translation",MODELS[d],{dtype:"q8",progress_callback:cb})}catch(e){pipes[d]=await pipeline("translation",MODELS[d],{progress_callback:cb})}
- pg.classList.add("hide");return pipes[d]}
-let TQ=Promise.resolve();const tr=(d,t)=>{const p=TQ.then(async()=>(await(await getPipe(d))(t,{max_new_tokens:256}))[0].translation_text);TQ=p.catch(()=>{});return p};
-const split=t=>t.split(/(?<=[.!?…。])\s+|\n+/).map(s=>s.trim()).filter(Boolean).flatMap(s=>{if(s.length<=260)return[s];const o=[];let c="";s.split(/(?<=[,;:])\s+/).forEach(p=>{if(c&&(c+" "+p).length>260){o.push(c);c=p}else c=c?c+" "+p:p});if(c)o.push(c);return o.flatMap(x=>x.length>400?x.match(/[\s\S]{1,300}(\s|$)/g).map(y=>y.trim()):[x])});
+const MODELS = {
+  "vi-en":"Xenova/nllb-200-distilled-600M",
+  "en-vi":"Xenova/nllb-200-distilled-600M"
+};
+
+const pipes = {};
+
+async function getPipe(dir){
+
+  if(pipes[dir]) return pipes[dir];
+
+  const pg=$("#pg");
+  pg.classList.remove("hide");
+
+  pipes[dir] = await pipeline(
+    "translation",
+    MODELS[dir],
+    {
+      dtype:"q8",
+      progress_callback:p=>{
+        if(p.status==="progress"){
+
+          pg.value = p.progress || 0;
+
+          $("#st").textContent =
+            "Đang tải AI dịch "
+            + Math.round(p.progress || 0)
+            + "%";
+        }
+      }
+    }
+  );
+
+  pg.classList.add("hide");
+
+  return pipes[dir];
+}
+
+/* chia đoạn lớn */
+
+function splitText(text,max=3000){
+
+  const chunks=[];
+
+  let current="";
+
+  const parts=text
+    .replace(/\r/g,"")
+    .split(/\n+/);
+
+  for(const p of parts){
+
+    if((current+p).length>max){
+
+      if(current.trim())
+        chunks.push(current.trim());
+
+      current=p;
+    }
+    else{
+
+      current += "\n"+p;
+    }
+  }
+
+  if(current.trim())
+    chunks.push(current.trim());
+
+  return chunks;
+}
+
+/* dịch bằng NLLB */
+
+async function baseTranslate(dir,text){
+
+  const pipe=await getPipe(dir);
+
+  const result=await pipe(
+    text,
+    {
+      src_lang:
+        dir==="vi-en"
+        ? "vie_Latn"
+        : "eng_Latn",
+
+      tgt_lang:
+        dir==="vi-en"
+        ? "eng_Latn"
+        : "vie_Latn",
+
+      max_new_tokens:2048
+    }
+  );
+
+  return result[0].translation_text;
+}
+
+/* AI sửa hậu kỳ */
+
+async function polishTranslate(dir,src,draft){
+
+  try{
+
+    if(!ai) return draft;
+
+    const answer = await chat([
+      {
+        role:"user",
+        content:
+        dir==="vi-en"
+        ?
+`Translate this Vietnamese text into natural, fluent English.
+
+Requirements:
+- preserve original meaning
+- fix grammar
+- sound like a native speaker
+- keep names unchanged
+- return translation only
+
+TEXT:
+
+${src}`
+        :
+`Translate this English text into natural Vietnamese.
+
+Requirements:
+- preserve original meaning
+- natural Vietnamese
+- no explanation
+- return translation only
+
+TEXT:
+
+${src}`
+      }
+    ]);
+
+    if(
+      answer &&
+      answer.length > 20
+    ){
+      return answer.trim();
+    }
+
+  }catch(e){}
+
+  return draft;
+}
+
+/* translator chính */
+
+let TQ = Promise.resolve();
+
+function tr(dir,text){
+
+  const task=TQ.then(async()=>{
+
+    const chunks=splitText(text);
+
+    let out=[];
+
+    for(const chunk of chunks){
+
+      const raw=
+        await baseTranslate(
+          dir,
+          chunk
+        );
+
+      const fixed=
+        await polishTranslate(
+          dir,
+          chunk,
+          raw
+        );
+
+      out.push(fixed);
+    }
+
+    return out.join("\n\n");
+  });
+
+  TQ=task.catch(()=>{});
+
+  return task;
+}
 
 /* ---- Tra từ: dictionaryapi.dev + Datamuse (miễn phí) ---- */
 const J=async u=>{try{return await(await fetch(u)).json()}catch(e){return null}},ic={},wi={};
@@ -144,9 +324,27 @@ $$("#tabs button").forEach(b=>b.onclick=()=>{$$("#tabs button").forEach(x=>x.cla
 $("#swap").onclick=()=>{dir=dir==="vi-en"?"en-vi":"vi-en";$("#l1").textContent=dir==="vi-en"?"Việt":"Anh";$("#l2").textContent=dir==="vi-en"?"Anh":"Việt"};
 $("#clr").onclick=()=>{$("#src").value="";$("#out").textContent=""};
 $("#go").onclick=async()=>{const t=$("#src").value.trim();if(!t)return;$("#go").disabled=true;$("#out").textContent="";const card=el("div","card");$("#out").append(card);
- try{const ps=split(t);let i=0;for(const s of ps){i++;$("#st").textContent="Đang dịch "+i+"/"+ps.length+"…";const o=await tr(dir,s);card.append(entry(dir==="vi-en"?{en:o,vi:s}:{en:s,vi:o},"",1))}$("#st").textContent="";addXP(2)}
- catch(e){$("#st").textContent="";card.append(el("p","err","Không dịch được: "+(e.message||e)))}$("#go").disabled=false};
+ tryconst translated =
+    await tr(
+      dir,
+      t
+    );
 
+card.append(
+  entry(
+    dir==="vi-en"
+    ? {
+        en:translated,
+        vi:t
+      }
+    : {
+        en:t,
+        vi:translated
+      },
+    "",
+    1
+  )
+);
 /* ---- Hội thoại ---- */
 const P=(t,s)=>({t,l:s.trim().split("\n").map(x=>x.split(" | "))});
 const DLG=[P("Làm quen",`Hi, I’m Linh. Nice to meet you. | Chào, tôi là Linh. Rất vui được gặp bạn.
@@ -312,8 +510,29 @@ $$("[data-x]").forEach(x=>x.onclick=()=>X[x.dataset.x]($("#xbox")));
 /* ---- Liên kết AI & trang học khác ---- */
 const enc=encodeURIComponent,VI=/[àáảãạăâđêôơưèéẻẽẹìíỉĩịòóỏõọùúủũụỳýỷỹỵ]/i;
 const PROMPTS={explain:q=>`Explain the English ${/\s/.test(q)?"sentence":"word"} "${q}" for a Vietnamese learner (CEFR B1). Give: Vietnamese meaning, IPA, part of speech, 3 synonyms, 3 antonyms, 3 example sentences with Vietnamese translations, common collocations, and common mistakes.`,
- dialogue:q=>`Write a natural 10-line English dialogue between A and B about "${q}" for a Vietnamese learner (CEFR B1). Use the format "A: ..." and "B: ...", one line each, no extra text.`,
- correct:q=>`Correct my English and explain each mistake in Vietnamese, then give a more natural version:\n${q}`,
+dialogue:q=>`
+
+Create a realistic English dialogue.
+
+Topic:
+${q}
+
+Rules:
+
+- 12 to 20 turns
+- natural native English
+- useful everyday expressions
+- no robotic sentences
+- CEFR B1-B2
+- A and B alternate speaking
+- no explanations
+
+Format:
+
+A: ...
+B: ...
+
+`
  ielts:q=>`Act as an IELTS examiner. Give band-score feedback (Task Response, Coherence, Lexical Resource, Grammar) and an improved version for:\n${q}`,
  practice:q=>`Be my English speaking partner about "${q}". Ask one question at a time, correct my mistakes briefly, and keep replies short.`};
 const SITES=[["ChatGPT",q=>"https://chatgpt.com/?q="+enc(q)],["Claude",q=>"https://claude.ai/new?q="+enc(q)],["Perplexity",q=>"https://www.perplexity.ai/search?q="+enc(q)],["Copilot",q=>"https://copilot.microsoft.com/?q="+enc(q)],["Gemini",q=>"https://gemini.google.com/app"]];
@@ -574,12 +793,12 @@ $("#dq").oninput=()=>renderDlg();
  dr.append(el("label","note",null,da," ∞ Tự tạo hội thoại mới bằng AI khi cuộn hết"),dtp);$("#dl").before(dr);da.onchange=()=>renderDlg()}
 
 /* ---------- 6. AI chạy ngay trên máy (không cần cài gì) ---------- */
-AIP["Trên máy (0.5B, nhẹ)"]=["local","onnx-community/Qwen2.5-0.5B-Instruct"];
+AIP["Trên máy (0.5B, nhẹ)"]=["local","Qwen/Qwen2.5-7B-Instruct"];
 AIP["Trên máy (1.5B, thông minh hơn)"]=["local","onnx-community/Qwen2.5-1.5B-Instruct"];
 Object.keys(AIP).forEach(k=>{if(![...$("#ap").options].some(o=>o.value===k)){const o=el("option","",k);o.value=k;$("#ap").append(o)}});
 $("#ap").value=ai.p;
 const LP={};
-async function localChat(msgs){const id=ai.model||"onnx-community/Qwen2.5-0.5B-Instruct",sys=msgs[0],rest=msgs.slice(1).slice(-6);
+async function localChat(msgs){const id=ai.model||"Qwen/Qwen2.5-7B-Instruct",sys=msgs[0],rest=msgs.slice(1).slice(-6);
  if(!LP[id]){const cb=p=>{if(p.status==="progress")$("#ast").textContent="Đang tải AI trên máy… "+Math.round(p.progress)+"% (chỉ lần đầu)"};
   try{LP[id]=await pipeline("text-generation",id,{dtype:"q4",device:navigator.gpu?"webgpu":"wasm",progress_callback:cb})}
   catch(e){LP[id]=await pipeline("text-generation",id,{dtype:"q4",device:"wasm",progress_callback:cb})}}
