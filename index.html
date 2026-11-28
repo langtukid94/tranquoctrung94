@@ -748,7 +748,7 @@
           <a href="#gallery" data-spy>Gallery</a>
           <a href="#blog" data-spy>Blog</a>
           <a href="#media" data-spy>Media</a>
-          <a href="#english" data-spy>English AI</a>
+          <a href="english.html" target="_blank" rel="noopener">🗣️ English AI</a>
           <a href="#qr" data-spy>QR</a>
           <a href="#faq" data-spy>FAQ</a>
           <a href="#contact" data-spy>Contact</a>
@@ -1258,7 +1258,8 @@
     <h2>English AI: Dịch &amp; Giao tiếp</h2>
     <span class="muted2" style="font-weight:800">Việt ⇄ Anh • Không giới hạn • Phát âm • Luyện nói</span>
   </div>
-  <div class="card pad"><div id="engHost"></div></div>
+  <div class="card pad"><a class="btn btnPrimary" href="english.html" target="_blank" rel="noopener">🗣️ Mở English AI trong tab mới</a>
+<p class="muted2" style="margin:10px 0 0">Dịch Anh ⇄ Việt, Teddy AI, 1.040 bài 4 kỹ năng, IELTS, TOEIC… chạy ở tab riêng để trang này nhẹ hơn.</p>
 </section>
     <section id="qr">
       <div class="titleRow">
@@ -2502,7 +2503,7 @@ END:VCARD`;
   nowModeEl.textContent = modeText();
 })();
 </script>
-  <script type="module">
+  
 import {pipeline,env} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
 env.allowLocalModels=false;
 
@@ -2682,6 +2683,5 @@ function spShow(){const box=$("#spbox");box.textContent="";const o=spList[spI],c
  row.append(l,m,nx);c.append(row,res);box.append(c)}
 cnt();
 </script>
-  <script type="module" src="english-app.js"></script>
 </body>
 </html>
